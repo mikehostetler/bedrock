@@ -84,13 +84,19 @@ defmodule Bedrock.Test.DataPlane.WALTestSupport do
   @spec read_transaction_by_version(String.t(), Version.t()) ::
           {:ok, Transaction.encoded()} | {:error, :not_found} | {:error, term()}
   def read_transaction_by_version(file_path, target_version) do
+    start_after =
+      if Version.first?(target_version),
+        do: Version.zero(),
+        else: Version.subtract(target_version, 1)
+
     segment = %Segment{
       path: file_path,
       min_version: Version.from_integer(0),
+      previous_version: start_after,
       transactions: nil
     }
 
-    with {:ok, stream} <- TransactionStreams.from_segments([segment], target_version),
+    with {:ok, stream} <- TransactionStreams.from_segments([segment], start_after),
          [transaction] <- Enum.take(stream, 1),
          {:ok, ^target_version} <- Transaction.commit_version(transaction) do
       {:ok, transaction}
