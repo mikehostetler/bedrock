@@ -3,7 +3,10 @@ defmodule Bedrock.ControlPlane.Coordinator.PathConfigTest do
 
   alias Bedrock.ControlPlane.Coordinator.DiskRaftLog
   alias Bedrock.ControlPlane.Coordinator.Server
+  alias Bedrock.ControlPlane.Coordinator.State
+  alias Bedrock.Raft
   alias Bedrock.Raft.Log.TupleInMemoryLog
+  alias Bedrock.Raft.Mode.Follower
 
   @moduletag :tmp_dir
 
@@ -44,6 +47,16 @@ defmodule Bedrock.ControlPlane.Coordinator.PathConfigTest do
       configure_cluster_without_path()
 
       assert {:ok, %TupleInMemoryLog{}} = Server.init_raft_log(TestPathCluster)
+    end
+
+    test "coordinator closes its disk log when it stops", %{tmp_dir: tmp_dir} do
+      configure_cluster_with_path(Path.join(tmp_dir, "coordinator"))
+      assert {:ok, %DiskRaftLog{} = raft_log} = Server.init_raft_log(TestPathCluster)
+
+      raft = %Raft{mode: %Follower{log: raft_log}}
+
+      assert :ok = Server.terminate(:normal, %State{raft: raft})
+      assert :undefined == :dets.info(raft_log.table_name)
     end
   end
 end

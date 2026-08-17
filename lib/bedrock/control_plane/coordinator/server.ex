@@ -319,6 +319,16 @@ defmodule Bedrock.ControlPlane.Coordinator.Server do
     |> noreply()
   end
 
+  @impl true
+  def terminate(_reason, %State{raft: raft}) when not is_nil(raft) do
+    case Raft.log(raft) do
+      %DiskRaftLog{} = log -> DiskRaftLog.close(log)
+      _other -> :ok
+    end
+  end
+
+  def terminate(_reason, _state), do: :ok
+
   @spec ack_fn(GenServer.from()) :: (term() -> :ok)
   defp ack_fn(from), do: fn result -> GenServer.reply(from, result) end
 
