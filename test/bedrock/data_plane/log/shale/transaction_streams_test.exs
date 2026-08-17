@@ -54,6 +54,28 @@ defmodule Bedrock.DataPlane.Log.Shale.TransactionStreamsTest do
       assert TransactionTestSupport.extract_log_version(transaction) == Version.from_integer(2)
     end
 
+    test "streams newest-first segments in ascending version order" do
+      transactions =
+        Map.new(1..4, fn version ->
+          {version, create_test_transaction(version, %{"version" => Integer.to_string(version)})}
+        end)
+
+      newest =
+        create_test_segment("newest", 3, [transactions[4], transactions[3]])
+
+      oldest =
+        create_test_segment("oldest", 1, [transactions[2], transactions[1]])
+
+      assert {:ok, stream} =
+               TransactionStreams.from_segments(
+                 [newest, oldest],
+                 Version.zero()
+               )
+
+      assert Enum.map(stream, &TransactionTestSupport.extract_log_version/1) ==
+               Enum.map(1..4, &Version.from_integer/1)
+    end
+
     test "returns error when given empty segment list" do
       assert {:error, :not_found} = TransactionStreams.from_segments([], Version.from_integer(1))
     end

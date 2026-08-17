@@ -103,8 +103,8 @@ defmodule Bedrock.DataPlane.Log.EnhancedTransactionStreamsTest do
 
       with_multiple_test_wals(wal_specs, fn [file1_path, file2_path] ->
         segments = [
-          create_test_segment(file1_path, 100),
-          create_test_segment(file2_path, 300)
+          create_test_segment(file2_path, 300),
+          create_test_segment(file1_path, 100)
         ]
 
         versions = extract_versions_from_stream(segments, Version.from_integer(250))

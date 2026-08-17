@@ -43,11 +43,10 @@ defmodule Bedrock.DataPlane.Log.Shale.TransactionStreams do
   def from_segments([], _target_version), do: {:error, :not_found}
 
   def from_segments(segments, target_version) do
-    # find_segments_from_target always returns all segments, so no need to check for []
-    segments = find_segments_from_target(segments, target_version)
-
     stream =
       segments
+      # Shale stores the active and retained segments newest-first.
+      |> Enum.reverse()
       |> Stream.flat_map(fn segment ->
         segment
         |> Segment.transactions()
@@ -65,14 +64,6 @@ defmodule Bedrock.DataPlane.Log.Shale.TransactionStreams do
       _ -> {:ok, stream}
     end
   end
-
-  # Find segments starting from the first one that could contain transactions > target_version
-  defp find_segments_from_target(segments, target_version), do: find_valid_segments(segments, target_version, [])
-
-  defp find_valid_segments([segment | rest], target_version, acc),
-    do: find_valid_segments(rest, target_version, [segment | acc])
-
-  defp find_valid_segments([], _target_version, acc), do: Enum.reverse(acc)
 
   @spec from_list_of_transactions((-> [Transaction.encoded()] | nil)) :: Enumerable.t(Transaction.encoded())
   def from_list_of_transactions(transactions_fn) do

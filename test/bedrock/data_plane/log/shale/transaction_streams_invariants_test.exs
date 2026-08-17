@@ -34,7 +34,11 @@ defmodule Bedrock.DataPlane.Log.Shale.TransactionStreamsInvariantsTest do
         Enum.reduce(segment_sizes, {[], 0}, fn size, {acc_segments, offset} ->
           segment_versions = Enum.slice(all_versions, offset, size)
           min_version = List.first(segment_versions)
-          transactions = Enum.map(segment_versions, &transaction_generator/1)
+
+          transactions =
+            segment_versions
+            |> Enum.map(&transaction_generator/1)
+            |> Enum.reverse()
 
           segment = %Segment{
             path: "/tmp/property_test_segment",
@@ -45,7 +49,7 @@ defmodule Bedrock.DataPlane.Log.Shale.TransactionStreamsInvariantsTest do
           {[segment | acc_segments], offset + size}
         end)
 
-      Enum.reverse(segments)
+      segments
     end
   end
 
@@ -217,6 +221,7 @@ defmodule Bedrock.DataPlane.Log.Shale.TransactionStreamsInvariantsTest do
   # Helper function to assert segments have non-overlapping version ranges
   defp assert_segments_have_non_overlapping_ranges(segments) do
     segments
+    |> Enum.reverse()
     |> Enum.chunk_every(2, 1, :discard)
     |> Enum.each(fn [prev_segment, next_segment] ->
       prev_max_version =
@@ -260,6 +265,9 @@ defmodule Bedrock.DataPlane.Log.Shale.TransactionStreamsInvariantsTest do
 
     assert Enum.all?(versions, &(&1 > zero_version)),
            "Found invalid transaction versions: #{inspect(Enum.map(versions, &Version.to_integer/1))}"
+
+    assert versions == Enum.sort(versions),
+           "Transactions are not in ascending version order: #{inspect(Enum.map(versions, &Version.to_integer/1))}"
   end
 
   defp assert_contains_all_expected(actual_transactions, expected_transactions) do
@@ -308,6 +316,7 @@ defmodule Bedrock.DataPlane.Log.Shale.TransactionStreamsInvariantsTest do
 
   defp simulate_stream_behavior(segments, target_version, last_version, limit) do
     segments
+    |> Enum.reverse()
     |> Enum.flat_map(&Enum.reverse(&1.transactions))
     |> Enum.filter(fn tx ->
       version = Transaction.commit_version!(tx)
