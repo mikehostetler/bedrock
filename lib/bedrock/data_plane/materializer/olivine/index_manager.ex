@@ -71,16 +71,30 @@ defmodule Bedrock.DataPlane.Materializer.Olivine.IndexManager do
 
   @spec recover_from_database(database :: Database.t()) ::
           {:ok, t()} | {:error, :missing_pages}
-  def recover_from_database({_data_db, _index_db} = database) do
+  def recover_from_database({data_db, _index_db} = database) do
     durable_version = Database.durable_version(database)
 
-    case Index.load_from(database) do
-      {:ok, initial_index, max_id, free_ids, n_keys} ->
+    case Index.load_from_with_repair(database) do
+      {:ok, initial_index, max_id, free_ids, n_keys, repaired?} ->
+        modified_pages = if repaired?, do: initial_index.page_map, else: %{}
+
+        output_queue =
+          if repaired? do
+            :queue.in(
+              {durable_version, data_db.file_offset, 0, modified_pages},
+              :queue.new()
+            )
+          else
+            :queue.new()
+          end
+
         index_manager = %__MODULE__{
-          versions: [{durable_version, {initial_index, %{}}}],
+          versions: [{durable_version, {initial_index, modified_pages}}],
           current_version: durable_version,
           window_size_in_microseconds: 5_000_000,
           id_allocator: IdAllocator.new(max_id, free_ids),
+          output_queue: output_queue,
+          last_version_ended_at_offset: data_db.file_offset,
           n_keys: n_keys
         }
 

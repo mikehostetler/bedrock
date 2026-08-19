@@ -188,6 +188,27 @@ defmodule Bedrock.ControlPlane.Director.Recovery.LockingPhaseTest do
   end
 
   describe "Task message leak prevention" do
+    test "a lock timeout is treated as an unavailable survivor" do
+      services = %{"slow_materializer" => {:materializer, {:slow_materializer, :node1}}}
+
+      context = %{
+        lock_timeout_in_ms: 10,
+        lock_service_fn: fn _service, _epoch ->
+          Process.sleep(100)
+          {:error, :too_late}
+        end
+      }
+
+      assert {:ok, locked, logs, materializers, transaction_services, service_pids} =
+               LockingPhase.lock_old_system_services(services, 2, context)
+
+      assert locked == MapSet.new()
+      assert logs == %{}
+      assert materializers == %{}
+      assert transaction_services == %{}
+      assert service_pids == %{}
+    end
+
     test "LockingPhase with slow tasks and race conditions does not leak Task replies" do
       # This test demonstrates that the LockingPhase correctly uses Task.async_stream
       # in a way that does NOT leak Task reply messages to the parent process,

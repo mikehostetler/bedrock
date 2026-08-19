@@ -3,6 +3,7 @@ defmodule Bedrock.DataPlane.Materializer.Olivine.PageChainRecoveryBugTest do
 
   alias Bedrock.DataPlane.Materializer.Olivine.Database
   alias Bedrock.DataPlane.Materializer.Olivine.Index
+  alias Bedrock.DataPlane.Materializer.Olivine.Index.Page
   alias Bedrock.DataPlane.Materializer.Olivine.IndexManager
   alias Bedrock.DataPlane.Transaction
   alias Bedrock.DataPlane.Version
@@ -235,6 +236,111 @@ defmodule Bedrock.DataPlane.Materializer.Olivine.PageChainRecoveryBugTest do
 
       assert missing_keys == [],
              "Missing #{length(missing_keys)} keys: #{inspect(Enum.take(missing_keys, 10))}"
+
+      Database.close(recovered_database)
+    end
+
+    test "keeps ascending keys ordered after an earlier page split", %{tmp_dir: tmp_dir} do
+      file_path = Path.join(tmp_dir, "ascending_batches.dets")
+      {:ok, database} = Database.open(:ascending_batches, file_path)
+
+      transaction_v1 =
+        1..300
+        |> Enum.map(fn i ->
+          key = "key_#{String.pad_leading(Integer.to_string(i), 4, "0")}"
+          {:set, key, "value_#{i}"}
+        end)
+        |> create_transaction(1_000_000)
+
+      manager = IndexManager.new()
+      {manager_v1, database_v1} = IndexManager.apply_transactions(manager, [transaction_v1], database)
+      [{version_v1, {_index_v1, modified_pages_v1}} | _] = manager_v1.versions
+
+      {:ok, database_v1, _metadata} =
+        Database.advance_durable_version(
+          database_v1,
+          version_v1,
+          Version.zero(),
+          data_size_in_bytes(database_v1),
+          [modified_pages_v1]
+        )
+
+      transaction_v2 =
+        301..600
+        |> Enum.map(fn i ->
+          key = "key_#{String.pad_leading(Integer.to_string(i), 4, "0")}"
+          {:set, key, "value_#{i}"}
+        end)
+        |> create_transaction(2_000_000)
+
+      {manager_v2, database_v2} = IndexManager.apply_transactions(manager_v1, [transaction_v2], database_v1)
+      [{version_v2, {_index_v2, modified_pages_v2}} | _] = manager_v2.versions
+
+      {:ok, database_v2, _metadata} =
+        Database.advance_durable_version(
+          database_v2,
+          version_v2,
+          version_v1,
+          data_size_in_bytes(database_v2),
+          [modified_pages_v2]
+        )
+
+      Database.close(database_v2)
+
+      {:ok, recovered_database} = Database.open(:ascending_batches_recovery, file_path)
+      {:ok, recovered} = IndexManager.recover_from_database(recovered_database)
+      [{^version_v2, {index, modified_pages}}] = recovered.versions
+
+      assert modified_pages == %{}
+
+      assert Enum.all?(1..600, fn i ->
+               key = "key_#{String.pad_leading(Integer.to_string(i), 4, "0")}"
+               match?({:ok, _page, _locator}, Index.locator_for_key(index, key))
+             end)
+
+      Database.close(recovered_database)
+    end
+
+    test "repairs overlapping pages created by old right-edge routing", %{tmp_dir: tmp_dir} do
+      file_path = Path.join(tmp_dir, "overlapping_pages.dets")
+      {:ok, database} = Database.open(:overlapping_pages, file_path)
+      version = Version.from_integer(10_000_000)
+
+      {:ok, old_a, database} = Database.store_value(database, "a", version, "old-a")
+      {:ok, z, database} = Database.store_value(database, "z", version, "z")
+      {:ok, m, database} = Database.store_value(database, "m", version, "m")
+      {:ok, new_a, database} = Database.store_value(database, "a", version, "new-a")
+
+      page_0 = Page.new(0, [{"a", old_a}, {"z", z}])
+      page_1 = Page.new(1, [{"a", new_a}, {"m", m}])
+      corrupt_page_map = %{0 => {page_0, 1}, 1 => {page_1, 0}}
+
+      {:ok, database, _metadata} =
+        Database.advance_durable_version(
+          database,
+          version,
+          Version.zero(),
+          data_size_in_bytes(database),
+          [corrupt_page_map]
+        )
+
+      Database.close(database)
+
+      {:ok, recovered_database} = Database.open(:overlapping_pages_recovery, file_path)
+      {:ok, recovered} = IndexManager.recover_from_database(recovered_database)
+      [{^version, {index, modified_pages}}] = recovered.versions
+
+      assert {:ok, pages} = Index.pages_for_range(index, <<>>, <<0xFF>>)
+      assert Enum.flat_map(pages, &Page.keys/1) == ["a", "m", "z"]
+
+      assert {:ok, _page, locator} = Index.locator_for_key(index, "a")
+      assert {:ok, "new-a"} = Database.load_value(recovered_database, locator)
+
+      assert modified_pages == index.page_map
+      assert :queue.len(recovered.output_queue) == 1
+
+      {recovered_data_db, _index_db} = recovered_database
+      assert recovered.last_version_ended_at_offset == recovered_data_db.file_offset
 
       Database.close(recovered_database)
     end

@@ -132,19 +132,38 @@ defmodule Bedrock.DataPlane.Materializer.Olivine.Index do
   @spec load_from(Database.t(), keyword()) ::
           {:ok, t(), Page.id(), [Page.id()], non_neg_integer()}
           | {:error, :missing_pages}
-  def load_from({_data_db, index_db}, opts \\ []) do
+  def load_from({data_db, index_db}, opts \\ []) do
+    case load_from_with_repair({data_db, index_db}, opts) do
+      {:ok, index, max_id, free_ids, n_keys, _repaired?} ->
+        {:ok, index, max_id, free_ids, n_keys}
+
+      {:error, :missing_pages} = error ->
+        error
+    end
+  end
+
+  @doc false
+  @spec load_from_with_repair(Database.t(), keyword()) ::
+          {:ok, t(), Page.id(), [Page.id()], non_neg_integer(), boolean()}
+          | {:error, :missing_pages}
+  def load_from_with_repair({_data_db, index_db}, opts \\ []) do
     {:ok, durable_version} = IndexDatabase.load_durable_version(index_db)
     max_keys = Keyword.get(opts, :max_keys_per_page, @default_max_keys_per_page)
     target_keys = div(max_keys * 3, 4)
 
     if durable_version == Version.zero() do
-      {:ok, new(opts), 0, [], 0}
+      {:ok, new(opts), 0, [], 0, false}
     else
       needed_page_ids = MapSet.new([0])
 
       case load_needed_pages(index_db, %{}, %{}, needed_page_ids, durable_version) do
         {:ok, final_page_map} ->
-          build_index_from_page_map(final_page_map, max_keys, target_keys)
+          {canonical_page_map, repaired?} = canonicalize_page_map(final_page_map, target_keys)
+
+          {:ok, index, max_id, free_ids, n_keys} =
+            build_index_from_page_map(canonical_page_map, max_keys, target_keys)
+
+          {:ok, index, max_id, free_ids, n_keys, repaired?}
 
         {:error, :missing_pages} ->
           {:error, :missing_pages}
@@ -259,6 +278,103 @@ defmodule Bedrock.DataPlane.Materializer.Olivine.Index do
       end
 
     {new_map, final_needed}
+  end
+
+  # Older Olivine builds routed keys above the current maximum back to page
+  # zero. After the first split, later append-only writes therefore produced
+  # overlapping page ranges. The values are still present in the data file,
+  # but rebuilding the tree from those ranges can make them unreachable.
+  #
+  # Recovery repairs such a map by sorting all stored key/locator pairs and
+  # repartitioning them into a canonical chain. A duplicate key keeps the
+  # locator with the greatest data-file offset, which is the latest append.
+  defp canonicalize_page_map(page_map, target_keys_per_page) do
+    case page_chain(page_map) do
+      {:ok, pages} ->
+        keys = Enum.flat_map(pages, &Page.keys/1)
+
+        if length(pages) == map_size(page_map) and keys == Enum.sort(keys) and
+             keys == Enum.uniq(keys) do
+          {page_map, false}
+        else
+          {rebuild_page_map(page_map, target_keys_per_page), true}
+        end
+
+      {:error, _reason} ->
+        {rebuild_page_map(page_map, target_keys_per_page), true}
+    end
+  end
+
+  defp page_chain(page_map) do
+    case Map.fetch(page_map, 0) do
+      {:ok, {page, next_id}} -> collect_page_chain(page_map, next_id, MapSet.new([0]), [page])
+      :error -> {:error, :missing_page_zero}
+    end
+  end
+
+  defp collect_page_chain(_page_map, 0, _seen, pages), do: {:ok, Enum.reverse(pages)}
+
+  defp collect_page_chain(page_map, page_id, seen, pages) do
+    if MapSet.member?(seen, page_id) do
+      {:error, {:cycle, page_id}}
+    else
+      case Map.fetch(page_map, page_id) do
+        {:ok, {page, next_id}} ->
+          collect_page_chain(
+            page_map,
+            next_id,
+            MapSet.put(seen, page_id),
+            [page | pages]
+          )
+
+        :error ->
+          {:error, {:missing_page, page_id}}
+      end
+    end
+  end
+
+  defp rebuild_page_map(page_map, target_keys_per_page) do
+    entries =
+      page_map
+      |> Enum.flat_map(fn {_page_id, {page, _next_id}} -> Page.key_locators(page) end)
+      |> Enum.reduce(%{}, fn {key, locator}, by_key ->
+        Map.update(by_key, key, locator, &newer_locator(&1, locator))
+      end)
+      |> Enum.sort_by(&elem(&1, 0))
+
+    chunks = balanced_chunks(entries, target_keys_per_page)
+    page_ids = repair_page_ids(page_map, length(chunks))
+
+    chunks
+    |> Enum.zip(page_ids)
+    |> Enum.with_index()
+    |> Map.new(fn {{chunk, page_id}, index} ->
+      next_id = Enum.at(page_ids, index + 1, 0)
+      {page_id, {Page.new(page_id, chunk), next_id}}
+    end)
+  end
+
+  defp newer_locator(existing, candidate) when candidate > existing, do: candidate
+  defp newer_locator(existing, _candidate), do: existing
+
+  defp balanced_chunks([], _target_keys_per_page), do: [[]]
+
+  defp balanced_chunks(entries, target_keys_per_page) do
+    chunk_count = ceil_div(length(entries), target_keys_per_page)
+    chunk_size = ceil_div(length(entries), chunk_count)
+    Enum.chunk_every(entries, chunk_size)
+  end
+
+  defp ceil_div(value, divisor), do: div(value + divisor - 1, divisor)
+
+  defp repair_page_ids(page_map, count) do
+    existing = [0 | page_map |> Map.keys() |> Enum.reject(&(&1 == 0)) |> Enum.sort()]
+    next_id = List.last(existing) + 1
+    available = existing ++ Enum.to_list(next_id..(next_id + count))
+
+    available
+    |> Enum.uniq()
+    |> Enum.take(count)
   end
 
   @spec build_index_from_page_map(%{Page.id() => {Page.t(), Page.id()}}, pos_integer(), pos_integer()) ::

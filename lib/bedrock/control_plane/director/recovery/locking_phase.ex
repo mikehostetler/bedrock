@@ -74,7 +74,7 @@ defmodule Bedrock.ControlPlane.Director.Recovery.LockingPhase do
            }, service_pids :: %{Worker.id() => pid()}}
           | {:error, :newer_epoch_exists}
   def lock_old_system_services(old_system_services, epoch, context \\ %{}) do
-    timeout_in_ms = lock_old_system_services_timeout()
+    timeout_in_ms = Map.get(context, :lock_timeout_in_ms, lock_old_system_services_timeout())
 
     old_system_services
     |> Task.async_stream(
@@ -104,6 +104,16 @@ defmodule Bedrock.ControlPlane.Director.Recovery.LockingPhase do
           }), Map.put(service_pids, id, pid)}}
 
       {:ok, {_id, _, {:error, _}}}, acc ->
+        {:cont, acc}
+
+      # With zip_input_on_exit, a timed-out task includes both its original
+      # service input and the exit reason. It is an unavailable survivor,
+      # just like an explicit lock error; later recovery phases can replace
+      # it. Do not crash the director while it is trying to recover.
+      {:exit, {{_id, _service}, _reason}}, acc ->
+        {:cont, acc}
+
+      {:exit, _reason}, acc ->
         {:cont, acc}
     end)
     |> case do
