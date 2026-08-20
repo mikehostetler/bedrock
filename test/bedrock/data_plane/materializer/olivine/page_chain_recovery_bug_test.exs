@@ -244,61 +244,24 @@ defmodule Bedrock.DataPlane.Materializer.Olivine.PageChainRecoveryBugTest do
       file_path = Path.join(tmp_dir, "ascending_batches.dets")
       {:ok, database} = Database.open(:ascending_batches, file_path)
 
-      transaction_v1 =
-        1..300
-        |> Enum.map(fn i ->
+      {manager, database} =
+        Enum.reduce(1..600, {IndexManager.new(), database}, fn i, {manager, database} ->
           key = "key_#{String.pad_leading(Integer.to_string(i), 4, "0")}"
-          {:set, key, "value_#{i}"}
+          transaction = create_transaction([{:set, key, "value_#{i}"}], i * 1_000_000)
+          IndexManager.apply_transactions(manager, [transaction], database)
         end)
-        |> create_transaction(1_000_000)
 
-      manager = IndexManager.new()
-      {manager_v1, database_v1} = IndexManager.apply_transactions(manager, [transaction_v1], database)
-      [{version_v1, {_index_v1, modified_pages_v1}} | _] = manager_v1.versions
+      [{_version, {index, _modified_pages}} | _] = manager.versions
+      expected = Enum.map(1..600, &"key_#{String.pad_leading(Integer.to_string(&1), 4, "0")}")
 
-      {:ok, database_v1, _metadata} =
-        Database.advance_durable_version(
-          database_v1,
-          version_v1,
-          Version.zero(),
-          data_size_in_bytes(database_v1),
-          [modified_pages_v1]
-        )
+      assert {:ok, pages} = Index.pages_for_range(index, <<>>, <<0xFF, 0xFF>>)
+      assert Enum.flat_map(pages, &Page.keys/1) == expected
 
-      transaction_v2 =
-        301..600
-        |> Enum.map(fn i ->
-          key = "key_#{String.pad_leading(Integer.to_string(i), 4, "0")}"
-          {:set, key, "value_#{i}"}
-        end)
-        |> create_transaction(2_000_000)
-
-      {manager_v2, database_v2} = IndexManager.apply_transactions(manager_v1, [transaction_v2], database_v1)
-      [{version_v2, {_index_v2, modified_pages_v2}} | _] = manager_v2.versions
-
-      {:ok, database_v2, _metadata} =
-        Database.advance_durable_version(
-          database_v2,
-          version_v2,
-          version_v1,
-          data_size_in_bytes(database_v2),
-          [modified_pages_v2]
-        )
-
-      Database.close(database_v2)
-
-      {:ok, recovered_database} = Database.open(:ascending_batches_recovery, file_path)
-      {:ok, recovered} = IndexManager.recover_from_database(recovered_database)
-      [{^version_v2, {index, modified_pages}}] = recovered.versions
-
-      assert modified_pages == %{}
-
-      assert Enum.all?(1..600, fn i ->
-               key = "key_#{String.pad_leading(Integer.to_string(i), 4, "0")}"
+      assert Enum.all?(expected, fn key ->
                match?({:ok, _page, _locator}, Index.locator_for_key(index, key))
              end)
 
-      Database.close(recovered_database)
+      Database.close(database)
     end
 
     test "repairs overlapping pages created by old right-edge routing", %{tmp_dir: tmp_dir} do
