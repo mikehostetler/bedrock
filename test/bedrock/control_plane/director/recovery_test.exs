@@ -292,6 +292,7 @@ defmodule Bedrock.ControlPlane.Director.RecoveryTest do
         %{
           coordinator: coordinator,
           lock_token: "test-lock-token",
+          prior_core_state: %{logs: %{"old-log" => []}},
           # An advertised materializer: the locking phase locks it and
           # records it into the attempt — a genuine phase mutation that
           # must survive the later stall.
@@ -382,8 +383,8 @@ defmodule Bedrock.ControlPlane.Director.RecoveryTest do
     test "processes recovery attempt and stalls with insufficient resources" do
       recovery_attempt = create_test_recovery_attempt()
 
-      # Without sufficient nodes/services, recovery stalls with unable to meet log quorum
-      assert {{:stalled, :unable_to_meet_log_quorum}, _} =
+      # Fresh initialization cannot place two logs on one node.
+      assert {{:stalled, {:insufficient_nodes, 2, 1}}, _} =
                Recovery.run_recovery_attempt(recovery_attempt, create_test_context())
     end
 
@@ -391,7 +392,7 @@ defmodule Bedrock.ControlPlane.Director.RecoveryTest do
       recovery_attempt = create_test_recovery_attempt()
 
       capture_log([level: :warning], fn ->
-        assert {{:stalled, :unable_to_meet_log_quorum}, _} =
+        assert {{:stalled, {:insufficient_nodes, 2, 1}}, _} =
                  Recovery.run_recovery_attempt(recovery_attempt, create_test_context())
       end)
     end
@@ -402,7 +403,7 @@ defmodule Bedrock.ControlPlane.Director.RecoveryTest do
       recovery_attempt = create_first_time_recovery_attempt()
       context = create_test_context()
 
-      assert {{:stalled, :unable_to_meet_log_quorum}, _stalled_attempt} =
+      assert {{:stalled, {:insufficient_nodes, 2, 1}}, _stalled_attempt} =
                Recovery.run_recovery_attempt(recovery_attempt, context)
     end
 
@@ -413,7 +414,7 @@ defmodule Bedrock.ControlPlane.Director.RecoveryTest do
 
       # With no state-based pre-handling, all attempts go through the normal recovery flow
       # This test now verifies that stateless recovery attempts work correctly
-      assert {{:stalled, :unable_to_meet_log_quorum}, _returned_attempt} =
+      assert {{:stalled, {:insufficient_nodes, 2, 1}}, _returned_attempt} =
                Recovery.run_recovery_attempt(recovery_attempt, context)
     end
 
@@ -434,7 +435,7 @@ defmodule Bedrock.ControlPlane.Director.RecoveryTest do
                Recovery.run_recovery_attempt(recovery_attempt, context)
     end
 
-    test "with multiple nodes and services but partial mocking stalls at log quorum" do
+    test "fresh cluster with partial mocking reports worker creation failure" do
       recovery_attempt = create_first_time_recovery_attempt()
 
       context =
@@ -443,19 +444,19 @@ defmodule Bedrock.ControlPlane.Director.RecoveryTest do
         |> with_available_log_services()
         |> with_available_storage_services()
 
-      # Without service locking or worker creation mocks, fails at log quorum
-      assert {{:stalled, :unable_to_meet_log_quorum}, _} =
+      # The fresh path selects nodes, then cannot create mocked workers.
+      assert {{:stalled, {:all_workers_failed, failures}}, _} =
                Recovery.run_recovery_attempt(recovery_attempt, context)
+
+      assert length(failures) == 2
     end
 
-    test "first-time recovery with full mocking still stalls at log quorum" do
-      # This test documents that even with full mocking, recovery stalls at log quorum
-      # due to the test setup constraints
+    test "first-time recovery reaches materializer creation with current mocks" do
       recovery_attempt = create_first_time_recovery_attempt()
       context = create_full_recovery_context()
 
-      # Even with full mocking, still stalls at log quorum in test environment
-      assert {{:stalled, :unable_to_meet_log_quorum}, _} =
+      # The old log quorum path is not valid for a cluster with no prior logs.
+      assert {{:stalled, {:materializer_creation_failed, {0, {:materializer_lock_failed, :unknown}}}}, _} =
                Recovery.run_recovery_attempt(recovery_attempt, context)
     end
 
@@ -512,8 +513,7 @@ defmodule Bedrock.ControlPlane.Director.RecoveryTest do
 
       context = create_coordinator_format_context(coordinator_services)
 
-      # Should stall with unable to meet log quorum in test environment
-      assert {{:stalled, :unable_to_meet_log_quorum}, _} =
+      assert {{:stalled, {:materializer_creation_failed, {0, {:materializer_lock_failed, :unknown}}}}, _} =
                Recovery.run_recovery_attempt(recovery_attempt, context)
     end
 

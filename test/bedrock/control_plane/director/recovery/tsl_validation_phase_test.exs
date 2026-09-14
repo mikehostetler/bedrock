@@ -11,7 +11,7 @@ defmodule Bedrock.ControlPlane.Director.Recovery.TSLValidationPhaseTest do
 
       # Valid TSL with correct types
       valid_tsl = %{
-        logs: %{},
+        logs: %{"old-log" => []},
         resolvers: []
       }
 
@@ -21,6 +21,14 @@ defmodule Bedrock.ControlPlane.Director.Recovery.TSLValidationPhaseTest do
 
       assert result_attempt == recovery_attempt
       assert next_phase == Bedrock.ControlPlane.Director.Recovery.LockingPhase
+    end
+
+    test "initializes when a durable bootstrap names no prior logs" do
+      recovery_attempt = %RecoveryAttempt{}
+      context = %{prior_core_state: %{logs: %{}, system_materializers: %{}}}
+
+      assert {^recovery_attempt, InitializationPhase} =
+               TSLValidationPhase.execute(recovery_attempt, context)
     end
 
     test "stalls recovery when TSL validation fails with corrupted data" do

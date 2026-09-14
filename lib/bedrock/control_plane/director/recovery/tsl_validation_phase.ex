@@ -39,7 +39,9 @@ defmodule Bedrock.ControlPlane.Director.Recovery.TSLValidationPhase do
 
   import Bedrock.ControlPlane.Director.Recovery.Telemetry
 
+  alias Bedrock.ControlPlane.Config.CoreState
   alias Bedrock.ControlPlane.Config.TSLTypeValidator
+  alias Bedrock.ControlPlane.Director.Recovery.InitializationPhase
 
   @doc """
   Validates the prior core state's type safety.
@@ -52,7 +54,17 @@ defmodule Bedrock.ControlPlane.Director.Recovery.TSLValidationPhase do
   recovery attempt (this is a pure validation phase).
   """
   @impl true
-  def execute(%RecoveryAttempt{} = recovery_attempt, %{prior_core_state: %{} = core_state}) do
+  def execute(%RecoveryAttempt{} = recovery_attempt, %{prior_core_state: core_state}) do
+    if CoreState.fresh?(core_state) do
+      {recovery_attempt, InitializationPhase}
+    else
+      validate_prior_core_state(recovery_attempt, core_state)
+    end
+  end
+
+  def execute(recovery_attempt, _context), do: {recovery_attempt, InitializationPhase}
+
+  defp validate_prior_core_state(recovery_attempt, core_state) do
     case TSLTypeValidator.validate_type_safety(core_state) do
       :ok ->
         trace_recovery_tsl_validation_success()
@@ -63,7 +75,4 @@ defmodule Bedrock.ControlPlane.Director.Recovery.TSLValidationPhase do
         {recovery_attempt, {:stalled, {:corrupted_tsl, validation_error}}}
     end
   end
-
-  def execute(recovery_attempt, _context),
-    do: {recovery_attempt, Bedrock.ControlPlane.Director.Recovery.InitializationPhase}
 end
