@@ -139,20 +139,28 @@ defmodule Bedrock.Internal.ClusterSupervisor do
       unsupported -> Logger.warning("Unsupported tracing module: #{inspect(unsupported)}")
     end)
 
-    children =
-      [
-        {DynamicSupervisor, name: cluster.otp_name(:sup)},
-        {Link,
-         [
-           cluster: cluster,
-           descriptor: descriptor,
-           path_to_descriptor: path_to_descriptor,
-           otp_name: cluster.otp_name(:link),
-           capabilities: capabilities,
-           mode: mode_for_capabilities(capabilities)
-         ]}
-        | children_for_capabilities(cluster, capabilities, config)
-      ]
+    dynamic_supervisor = {DynamicSupervisor, name: cluster.otp_name(:sup)}
+
+    link =
+      {Link,
+       [
+         cluster: cluster,
+         descriptor: descriptor,
+         path_to_descriptor: path_to_descriptor,
+         otp_name: cluster.otp_name(:link),
+         capabilities: capabilities,
+         mode: mode_for_capabilities(capabilities)
+       ]}
+
+    {foreman, coordinator} =
+      cluster
+      |> children_for_capabilities(capabilities, config)
+      |> Enum.split_with(fn {module, _opts} -> module == Foreman end)
+
+    # Link reads Foreman's running services while it registers this node.
+    # Coordinator reads Link's descriptor while it starts. Start each owner
+    # before the process that calls it.
+    children = [dynamic_supervisor] ++ foreman ++ [link] ++ coordinator
 
     Supervisor.init(children, strategy: :one_for_one)
   end
