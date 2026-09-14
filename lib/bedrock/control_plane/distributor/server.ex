@@ -36,16 +36,22 @@ defmodule Bedrock.ControlPlane.Distributor.Server do
   def child_spec(opts) do
     %{
       id: __MODULE__,
-      start: {__MODULE__, :start, [opts]},
+      start: {__MODULE__, :start_link, [opts]},
       restart: :temporary
     }
   end
 
+  @doc false
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts) do
+    GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :otp_name))
+  end
+
   @doc """
-  Starts an unlinked distributor: the director supervises by monitor
-  (ceded `:normal` exits are not re-recruited; failures are), and the
-  distributor watches the director back — a per-epoch singleton dies
-  with its epoch.
+  Starts an unlinked distributor for direct callers. The director monitors
+  it (ceded `:normal` exits are not re-recruited; failures are), and the
+  distributor watches the director back. Supervised cluster startup uses
+  `start_link/1` through `child_spec/1` instead.
   """
   @spec start(keyword()) :: {:ok, pid()} | {:error, term()}
   def start(opts) do

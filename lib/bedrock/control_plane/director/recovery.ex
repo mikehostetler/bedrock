@@ -211,14 +211,17 @@ defmodule Bedrock.ControlPlane.Director.Recovery do
   @doc """
   Recruits the per-epoch Distributor singleton once the transaction
   system is running (FDB's CC recruits DD only after recovery accepts
-  commits). Unlinked + monitored: a ceded exit (`:normal`) is final for
-  this epoch; failures are retried by the director's timer. The lock —
-  not this supervision — is what fences a stale instance's writes.
+  commits). The cluster supervisor owns its process lifetime; the director
+  monitors it. A ceded exit (`:normal`) is final for this epoch; failures are
+  retried by the director's timer. The lock fences stale writes.
   """
   @spec maybe_start_distributor(State.t()) :: State.t()
   def maybe_start_distributor(%{state: :running, distributor: nil, transaction_system_layout: tsl} = t)
       when tsl != nil do
-    start_fn = t.distributor_start_fn || (&Distributor.Server.start/1)
+    start_fn =
+      t.distributor_start_fn ||
+        (&DynamicSupervisor.start_child(t.cluster.otp_name(:sup), Distributor.Server.child_spec(&1)))
+
     wiring = t.distributor_wiring || %{logs: %{}, log_refs: %{}}
 
     case start_fn.(
