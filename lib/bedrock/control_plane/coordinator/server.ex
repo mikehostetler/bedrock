@@ -234,8 +234,10 @@ defmodule Bedrock.ControlPlane.Coordinator.Server do
 
     if_result =
       if new_leader == t.my_node do
-        # We became leader - start Director immediately
-        # TSL is OUTPUT of recovery (not input), config is loaded from object storage at init
+        # Another coordinator can persist a newer recovery record while this
+        # process is a follower. Refresh it before this node starts a director.
+        # The Raft epoch still comes from the leadership event.
+        updated_t = refresh_recovery_state(updated_t)
         service_count = map_size(updated_t.service_directory)
         trace_leader_ready_starting_director(service_count)
 
@@ -453,6 +455,18 @@ defmodule Bedrock.ControlPlane.Coordinator.Server do
   end
 
   # Object Storage loading functions
+
+  @doc false
+  @spec refresh_recovery_state(State.t()) :: State.t()
+  def refresh_recovery_state(t) do
+    case load_state_from_object_storage(t.cluster) do
+      {_epoch, nil, nil} ->
+        t
+
+      {_epoch, config, prior_core_state} ->
+        %{t | config: config, prior_core_state: prior_core_state}
+    end
+  end
 
   @spec load_state_from_object_storage(module()) ::
           {Bedrock.epoch() | nil, map() | nil, map() | nil}
