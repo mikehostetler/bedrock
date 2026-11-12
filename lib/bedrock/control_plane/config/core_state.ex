@@ -39,9 +39,10 @@ defmodule Bedrock.ControlPlane.Config.CoreState do
   through foreman registration rather than trusting a durable address.
   The record says WHICH logs, never where they were last seen.
 
-  Materializer membership joins this record in bedrock-q67.21.12, for
-  the one shard recovery cannot do without: the system shard, whose
-  keyspace holds the metadata every later phase reads.
+  The record also stores the last known system-materializer locations.
+  These locations are cache hints. The logs and their stored chunks are
+  the durable source. Recovery can rebuild tag 0 from that source when a
+  named materializer is no longer available or no longer owns tag 0.
   """
 
   alias Bedrock.ControlPlane.Config.LogDescriptor
@@ -74,9 +75,8 @@ defmodule Bedrock.ControlPlane.Config.CoreState do
     %{logs: logs, system_materializers: members_from(bootstrap)}
   end
 
-  # A record written before this field existed names no members. That is
-  # not a crash and not a fresh cluster — it is an upgrade, and recovery
-  # says so rather than guessing where the metadata lives.
+  # A record written before this field existed names no cache locations.
+  # Recovery rebuilds the system materializer from the recovered logs.
   defp members_from(bootstrap) do
     bootstrap
     |> Map.get(:system_materializers)
@@ -107,13 +107,12 @@ defmodule Bedrock.ControlPlane.Config.CoreState do
     do: %{logs: Map.get(layout, :logs) || %{}, system_materializers: system_materializers}
 
   @doc """
-  The system shard's materializer members — the record that says WHERE
-  the cluster's metadata lives.
+  The system shard's last known materializer members.
 
-  Recovery cannot read the shard layout or the materializers family
-  until it knows which workers hold tag 0, because both live IN tag 0.
-  FDB has the same indirection: its coordinated state names the tlogs
-  that hold the txnStateStore, and recovery peeks them to rebuild it.
+  Recovery first tries these cache locations. It accepts one only when
+  the recovered membership still assigns tag 0 to that worker. If no
+  hint is valid, recovery creates a new cache and rebuilds it from the
+  recovered logs and chunks.
   """
   @spec system_materializers(t() | nil) :: %{Worker.id() => String.t()}
   def system_materializers(nil), do: %{}

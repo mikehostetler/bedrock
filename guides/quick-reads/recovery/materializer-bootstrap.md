@@ -1,6 +1,6 @@
 # Materializer Bootstrap
 
-**Get the shard layout back, by asking the materializer that already holds it.**
+**Get the shard layout back from a valid cache, or rebuild the cache from recovered history.**
 
 Recovery needs to know the cluster's shard boundaries before it can place
 resolvers or route anything. Those boundaries live in the committed keyspace
@@ -8,9 +8,9 @@ under `\xff/system/shard_keys/`, which means recovery has to bring one
 materializer — the one serving the system shard, tag 0 — back online and read
 them out of it.
 
-This phase is deliberately *not* a recruitment phase. Materializers hold
-irreplaceable committed state, so the goal is to reuse the survivors, not to
-replace them.
+Materializers are caches. The recovered logs and object-storage chunks hold
+the durable history. The phase can reuse a valid cache, or create a new cache
+and replay that history.
 
 ## Fresh Cluster
 
@@ -21,27 +21,26 @@ end of the keyspace, and the user shard (tag 1) covering everything below
 
 ## Existing Cluster
 
-1. **Resolve the system materializer by name** from the prior
-   [`CoreState`](../transaction-system-layout.md). It is looked up, never
-   invented — recovery does not guess which worker was serving tag 0.
-2. **Lock it** for this recovery.
-3. **Unlock it** with its replica set of pull sources, so it starts pulling
-   from the logs.
-4. **Wait for catchup** — up to 60 seconds, polling — until it has applied
-   through the recovery version.
-5. **Read the shard layout** from `\xff/system/shard_keys/*`.
+1. **Check the named system materializers** from the prior
+   [`CoreState`](../transaction-system-layout.md). These names are cache
+   hints, not durable authority.
+2. **Lock and replay a named cache** through the recovery version.
+3. **Read its committed membership** and reuse it only if that membership
+   still assigns tag 0 to the named worker.
+4. **Rebuild when no named cache is valid.** Create a tag-0 materializer,
+   replay the recovered logs and chunks, and wait for catchup.
+5. **Read the shard layout** from `\xff/system/shard_keys/*` and the member
+   set from `\xff/system/materializers/*`.
 
-The `\xff/system/materializers/` family is read alongside it: a family-named
-worker that this epoch locked, whose own shard assignment agrees, is
-re-adopted for its shard. Only a shard with no survivor gets a fresh
-materializer, which rebuilds from its object-storage chunks.
+The distributor manages data-tag materializers after recovery. This phase
+only restores the tag-0 cache that recovery needs to read system metadata.
 
 ## Stalls
 
-The phase stalls — and recovery retries — if the named members are
-unavailable, if catchup times out, or if the recovered layout reads empty. An
-empty read is treated as a failure rather than as "this cluster has no
-shards", because the difference matters: see
+The phase stalls and recovery retries if reconstruction fails, catchup times
+out, or the recovered layout reads empty. An empty read is treated as a
+failure rather than as "this cluster has no shards", because the difference
+matters: see
 [The System Keyspace](../system-keyspace.md).
 
 ## Next Phase

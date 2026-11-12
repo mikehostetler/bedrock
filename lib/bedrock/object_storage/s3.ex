@@ -15,7 +15,7 @@ defmodule Bedrock.ObjectStorage.S3 do
     bucket = Keyword.fetch!(config, :bucket)
 
     bucket
-    |> ExAws.S3.put_object(key, data, put_object_opts(opts))
+    |> ExAws.S3.put_object(key, IO.iodata_to_binary(data), put_object_opts(opts))
     |> ExAws.request(request_config(config))
     |> case do
       {:ok, _response} -> :ok
@@ -71,7 +71,7 @@ defmodule Bedrock.ObjectStorage.S3 do
     bucket = Keyword.fetch!(config, :bucket)
 
     bucket
-    |> ExAws.S3.put_object(key, data, put_object_opts(opts, if_none_match: "*"))
+    |> ExAws.S3.put_object(key, IO.iodata_to_binary(data), put_object_opts(opts, if_none_match: "*"))
     |> ExAws.request(request_config(config))
     |> case do
       {:ok, _response} ->
@@ -123,7 +123,7 @@ defmodule Bedrock.ObjectStorage.S3 do
       bucket = Keyword.fetch!(config, :bucket)
 
       bucket
-      |> ExAws.S3.put_object(key, data, put_object_opts(opts, if_match: version_token))
+      |> ExAws.S3.put_object(key, IO.iodata_to_binary(data), put_object_opts(opts, if_match: version_token))
       |> ExAws.request(request_config(config))
       |> case do
         {:ok, _response} ->
